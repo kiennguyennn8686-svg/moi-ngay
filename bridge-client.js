@@ -9,6 +9,7 @@
   var scriptUrl = String(window.MOI_NGAY_SCRIPT_URL || '');
   var readyWindow = null, readyOrigin = '', nextId = 0, pending = Object.create(null);
   var connectError = '';
+  document.documentElement.setAttribute('data-mn-bridge', 'loading');
   var frame = document.createElement('iframe');
   frame.title = 'Kết nối dữ liệu Google';
   frame.setAttribute('aria-hidden','true');
@@ -58,6 +59,7 @@
     if (message.type === 'ready') {
       if (readyWindow && (event.source !== readyWindow || event.origin !== readyOrigin)) return;
       readyWindow = event.source; readyOrigin = event.origin;
+      document.documentElement.setAttribute('data-mn-bridge', 'ready');
       Object.keys(pending).forEach(function (id) { sendPending(pending[id]); });
       return;
     }
