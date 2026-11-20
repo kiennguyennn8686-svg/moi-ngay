@@ -252,6 +252,8 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   function showRememberedGreeting(session) {
     var name = session && typeof session.displayName === 'string' ? session.displayName.trim().slice(0, 80) : '';
     var title = $('#auth-title'); title.textContent = 'Chào mừng trở lại!';
+    // Các trang HTML cũ vẫn hoạt động trong lúc trình duyệt cập nhật bản mới.
+    if ($('#auth-loading')) $('#auth-screen').classList.add('is-restoring');
     if (!name) return;
     var line = document.createElement('span');
     line.setAttribute('data-greeting-name', ''); line.textContent = name; line.title = name;
@@ -260,6 +262,8 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   }
   function showAuth(message) {
     app.request++; app.loading = false;
+    $('#auth-screen').classList.remove('is-restoring');
+    document.documentElement.classList.remove('preparing-session');
     $('#private-app').hidden = true; $('#private-nav').hidden = true; $('#auth-screen').hidden = false;
     if ($('#dialog').open) $('#dialog').close();
     if (app.queue.length) message = (message || 'Hãy đăng nhập lại.') + ' Còn ' + app.queue.length + ' thay đổi chưa lưu; hãy đăng nhập đúng tài khoản trước để tiếp tục lưu.';
@@ -307,6 +311,8 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     $('#auth-password').type = 'password'; $('#auth-show-password').textContent = 'Hiện';
     $('#auth-show-password').setAttribute('aria-label', 'Hiện mật khẩu');
     $('#auth-screen').hidden = true; $('#private-app').hidden = false; $('#private-nav').hidden = false;
+    $('#auth-screen').classList.remove('is-restoring');
+    document.documentElement.classList.remove('preparing-session');
     if (!app.queue.length || previous !== session.uid) {
       app.view = 'overview'; app.data = null; app.month = null; app.history = []; app.revision = 0;
       $('#content').innerHTML = '<div class="loading-card"><span class="spinner"></span><span>Đang tải dữ liệu của bạn…</span></div>';
@@ -364,13 +370,15 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   });
   async function startAuth() {
     var saved = restoreSession();
-    if (!saved || !saved.token) return;
+    if (!saved || !saved.token) { document.documentElement.classList.remove('preparing-session'); return; }
     showRememberedGreeting(saved); setAuthBusy(true, true);
+    document.documentElement.classList.remove('preparing-session');
     try {
       var user = await rawRpc('getSession', { token: saved.token });
       await activateSession({ token: saved.token, uid: user.uid, username: user.username, expires: saved.expires, displayName: saved.displayName });
     } catch (error) {
       if (/AUTH_REQUIRED/.test(error.message)) storeSession(null);
+      $('#auth-screen').classList.remove('is-restoring');
       updateAuthMode();
       $('#auth-error').textContent = /AUTH_REQUIRED/.test(error.message) ? 'Phiên đăng nhập đã hết. Hãy đăng nhập lại.' : 'Chưa thể kiểm tra phiên đăng nhập. Hãy kiểm tra mạng và thử lại.';
       $('#auth-error').hidden = false;

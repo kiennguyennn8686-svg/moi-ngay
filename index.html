@@ -12,7 +12,19 @@
   <base target="_top">
   <meta charset="utf-8">
   <meta name="color-scheme" content="light">
-  <link rel="stylesheet" href="./styles.css">
+  <script>
+    // Ẩn biểu mẫu ngay từ khung hình đầu nếu thiết bị đã có phiên đăng nhập.
+    (function () {
+      try {
+        var saved = JSON.parse(localStorage.getItem('moi-ngay.session.v1') || 'null');
+        if (saved && /^[0-9a-f]{96}$/.test(saved.token || '')) {
+          document.documentElement.classList.add('preparing-session');
+          setTimeout(function () { document.documentElement.classList.remove('preparing-session'); }, 10000);
+        }
+      } catch (_) {}
+    })();
+  </script>
+  <link rel="stylesheet" href="./styles.css?v=8d56f5dbfdc2">
   <style>
     .mobile-clock{margin-left:auto;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;padding:8px 10px;border:1px solid #dfe9db;border-radius:10px;background:#edf4e9;color:#315b38;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;font-weight:750;font-variant-numeric:tabular-nums;line-height:1}
     .mobile-clock svg{width:17px;height:17px;color:#638b64}
@@ -41,6 +53,7 @@
     <div class="auth-wrap">
       <div class="auth-brand"><span class="brand-mark"><svg aria-hidden="true"><use href="#i-leaf"/></svg></span><span>Mỗi Ngày<small>CHẤM CÔNG &amp; THU CHI</small></span></div>
       <div class="auth-intro"><p class="eyebrow">KHÔNG GIAN CỦA RIÊNG BẠN</p><h1 id="auth-title">Chào mừng trở lại!</h1><p id="auth-subtitle">Đăng nhập để tiếp tục chăm chút cho mỗi ngày.</p></div>
+      <div id="auth-loading" class="auth-loading" role="status" aria-live="polite"><span class="spinner" aria-hidden="true"></span><span>Chờ một chút nhé…!</span></div>
       <div class="auth-card">
         <div class="auth-tabs" aria-label="Chọn cách bắt đầu"><button type="button" class="active" data-auth-mode="login" aria-pressed="true">Đăng nhập</button><button type="button" data-auth-mode="register" aria-pressed="false">Tạo tài khoản</button></div>
         <form id="auth-form" class="dialog-form">
@@ -108,6 +121,7 @@
       window.addEventListener('pageshow', updateClock);
     })();
   </script>
-  <script src="./config.js"></script><script src="./bridge-client.js"></script><script src="./client.js"></script>
+  <script src="./config.js"></script><script src="./bridge-client.js"></script><script src="./client.js?v=55c60a115b1a"></script>
 </body>
 </html>
+
