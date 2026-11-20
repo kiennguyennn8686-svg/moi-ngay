@@ -185,11 +185,50 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     .map(function (value) { return value ? '1' : '0'; }).join('');
   return 'D1-' + ('00000000' + (fingerprint >>> 0).toString(16).toUpperCase()).slice(-8) + '-' + flags;
 }
+// Bản lưu gần nhất chỉ dùng sau khi máy chủ xác nhận đúng tài khoản.
+var dataCacheKey_ = 'moi-ngay.data-cache.v1';
+function dataCacheMonth_(timeZone, clockOffset, now) {
+  try {
+    var parts = {};
+    new Intl.DateTimeFormat('en-US', {timeZone:timeZone || 'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit'})
+      .formatToParts(new Date(now + clockOffset)).forEach(function (part) { parts[part.type] = part.value; });
+    return parts.year + '-' + parts.month;
+  } catch (_) { return ''; }
+}
+function validCachedData_(data) {
+  var date = /^\d{4}-\d{2}-\d{2}$/;
+  function attendance(row) { return row && date.test(row.date || '') && isFinite(Number(row.units)) && isFinite(Number(row.overtimeHours)); }
+  return !!(data && /^\d{4}-(0[1-9]|1[0-2])$/.test(data.month || '') && date.test(data.today || '') &&
+    date.test(data.bonusStart || '') && date.test(data.bonusEnd || '') && isFinite(Number(data.budget)) &&
+    Array.isArray(data.attendance) && data.attendance.every(attendance) &&
+    Array.isArray(data.bonusAdjacent) && data.bonusAdjacent.every(attendance) &&
+    Array.isArray(data.transactions) && data.transactions.every(function (row) { return row && date.test(row.date || '') && isFinite(Number(row.amount)); }) &&
+    Array.isArray(data.rates) && data.rates.every(function (row) { return row && typeof row.kind === 'string' && date.test(row.effective || '') && isFinite(Number(row.amount)); }));
+}
+function writeDataCache_(storage, uid, data, clockOffset, now) {
+  try {
+    if (typeof uid !== 'string' || !uid || !validCachedData_(data) || !isFinite(clockOffset) ||
+        data.month !== dataCacheMonth_(data.timeZone, clockOffset, now)) return false;
+    var content = JSON.stringify({uid:uid,savedAt:now,clockOffset:clockOffset,data:data});
+    if (content.length > 1500000) return false;
+    storage.setItem(dataCacheKey_, content); return true;
+  } catch (_) { return false; }
+}
+function readDataCache_(storage, uid, now) {
+  try {
+    var saved = JSON.parse(storage.getItem(dataCacheKey_) || 'null');
+    if (!saved || typeof uid !== 'string' || !uid || saved.uid !== uid || !Number.isFinite(saved.savedAt) ||
+        saved.savedAt > now + 300000 || now - saved.savedAt > 7 * 86400000 ||
+        !Number.isFinite(saved.clockOffset) || !validCachedData_(saved.data) ||
+        saved.data.month !== dataCacheMonth_(saved.data.timeZone, saved.clockOffset, now)) return null;
+    return saved;
+  } catch (_) { return null; }
+}
 (function () {
   'use strict';
   var app = { view: 'overview', data: null, month: null, request: 0, draft: null, pending: null,
     queue: [], syncSaving: false, syncError: null, revision: 0, history: [], loading: false, renderPending: false, serverClockOffset: 0,
-    session: null, authMode: 'login', authBusy: false, loggingOut: false };
+    session: null, authMode: 'login', authBusy: false, loggingOut: false, cacheState: null };
   var $ = function (selector) { return document.querySelector(selector); };
   var html = function (value) { return String(value == null ? '' : value).replace(/[&<>"']/g, function (c) { return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); };
   var number = new Intl.NumberFormat('vi-VN', { maximumFractionDigits: 2 });
@@ -232,7 +271,10 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   var sessionKey = 'moi-ngay.session.v1';
   var useIosPartitionedSession = !window.__MOI_NGAY_HOSTED__ && window.isSecureContext && canUseIosPartitionedSession_(navigator.userAgent, navigator.platform, navigator.maxTouchPoints, typeof Math.sumPrecise === 'function');
   function storeSession(value) {
-    try { if (value) localStorage.setItem(sessionKey, JSON.stringify(value)); else localStorage.removeItem(sessionKey); } catch (_) {}
+    try {
+      if (value) localStorage.setItem(sessionKey, JSON.stringify(value));
+      else { localStorage.removeItem(sessionKey); localStorage.removeItem(dataCacheKey_); }
+    } catch (_) {}
     if (useIosPartitionedSession) writePartitionedSessionToken_(document, value && value.token);
   }
   function restoreSession() {
@@ -242,6 +284,11 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     } catch (_) {}
     var token = useIosPartitionedSession ? readPartitionedSessionToken_(document) : '';
     return token ? { token: token } : null;
+  }
+  function sessionStillCurrent(token) {
+    if (!window.__MOI_NGAY_HOSTED__) return true;
+    var current = restoreSession();
+    return !!(current && current.token === token);
   }
   function rememberDisplayName(value) {
     if (!app.session) return;
@@ -262,6 +309,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   }
   function showAuth(message) {
     app.request++; app.loading = false;
+    app.cacheState = null; updateCacheStatus();
     $('#auth-screen').classList.remove('is-restoring');
     document.documentElement.classList.remove('preparing-session');
     $('#private-app').hidden = true; $('#private-nav').hidden = true; $('#auth-screen').hidden = false;
@@ -291,6 +339,19 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     document.querySelectorAll('[data-auth-mode]').forEach(function (button) { button.disabled = busy; });
     $('#auth-submit').textContent = busy ? (restoring ? 'Chờ một chút nhé…!' : 'Đang xử lý…') : (app.authMode === 'register' ? 'Tạo tài khoản' : 'Đăng nhập');
   }
+  function updateCacheStatus() {
+    var status = $('#cache-status'); if (!status) return;
+    status.hidden = !app.cacheState;
+    if (!app.cacheState) { status.innerHTML = ''; return; }
+    status.className = 'cache-status' + (app.cacheState === 'error' ? ' cache-error' : '');
+    status.innerHTML = app.cacheState === 'error'
+      ? '<span>Chưa cập nhật được dữ liệu. Số liệu đang xem có thể cũ.<small>Thử lại để tiếp tục thao tác.</small></span><button type="button" data-action="retry-cache">Thử lại</button>'
+      : '<span class="sync-spinner" aria-hidden="true"></span><span>Đang hiển thị dữ liệu đã lưu và cập nhật từ Google…<small>Chờ cập nhật xong để thao tác.</small></span>';
+  }
+  function saveCurrentDataCache() {
+    if (!app.session || !app.data || app.queue.length || app.syncError || app.loading || app.cacheState || !sessionStillCurrent(app.session.token)) return;
+    try { writeDataCache_(localStorage, app.session.uid, app.data, app.serverClockOffset, Date.now()); } catch (_) {}
+  }
   function toHex(bytes) { return Array.from(bytes).map(function (value) { return value.toString(16).padStart(2, '0'); }).join(''); }
   function fromHex(value) { return new Uint8Array(value.match(/../g).map(function (part) { return parseInt(part, 16); })); }
   async function derivePassword(password, salt, iterations) {
@@ -300,7 +361,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromHex(salt), iterations: iterations, hash: 'SHA-256' }, key, 256);
     return new Uint8Array(bits);
   }
-  async function activateSession(session, initialData, initialRevision) {
+  async function activateSession(session, initialData, initialRevision, cachedSnapshot) {
     // Không chuyển tài khoản khi còn thay đổi chưa gửi của người dùng trước.
     if (app.queue.length && session.uid !== app.queue[0].uid) {
       rawRpc('logoutAccount', { token: session.token }).catch(function () {});
@@ -316,9 +377,10 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       if (!initialData) $('#content').innerHTML = '<div class="loading-card"><span class="spinner"></span><span>Đang tải dữ liệu của bạn…</span></div>';
     }
     if (initialData) {
-      app.request++; app.loading = false;
+      app.request++; app.loading = !!cachedSnapshot;
       var serverTime = Date.parse(initialData.serverNow || '');
-      if (isFinite(serverTime)) app.serverClockOffset = serverTime - Date.now();
+      if (cachedSnapshot) app.serverClockOffset = cachedSnapshot.clockOffset;
+      else if (isFinite(serverTime)) app.serverClockOffset = serverTime - Date.now();
       replayMutations_(initialData, app.history, initialRevision);
       app.data = initialData; app.month = initialData.month;
       rememberDisplayName(initialData.displayName); render(true);
@@ -326,8 +388,9 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     $('#auth-screen').hidden = true; $('#private-app').hidden = false; $('#private-nav').hidden = false;
     $('#auth-screen').classList.remove('is-restoring');
     document.documentElement.classList.remove('preparing-session');
-    app.syncError = null; updateSyncStatus();
+    app.syncError = null; updateSyncStatus(); updateCacheStatus();
     if (initialData) fitGreetingName(); else load(app.month);
+    if (initialData && !cachedSnapshot) saveCurrentDataCache();
     if (app.queue.length) processSyncQueue();
   }
   async function logout() {
@@ -387,21 +450,66 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     document.documentElement.classList.remove('preparing-session');
     try {
       var revision = app.revision;
-      var results = await Promise.all([
-        rawRpc('getSession', { token: saved.token }),
-        rawRpc('getAppData', { token: saved.token, month: null })
-      ]);
-      var user = results[0];
-      await activateSession({ token: saved.token, uid: user.uid, username: user.username, expires: saved.expires, displayName: saved.displayName }, results[1], revision);
+      var settled = null;
+      var dataRequest = rawRpc('getAppData', { token: saved.token, month: null }).then(
+        function (data) { return settled = {data:data}; }, function (error) { return settled = {error:error}; }
+      );
+      var user = await rawRpc('getSession', { token: saved.token });
+      if (!sessionStillCurrent(saved.token)) { showAuth('Tài khoản trên thiết bị đã thay đổi. Hãy đăng nhập lại.'); return; }
+      var session = { token: saved.token, uid: user.uid, username: user.username, expires: saved.expires, displayName: saved.displayName };
+      var cached = null;
+      try { if ($('#cache-status')) cached = readDataCache_(localStorage, user.uid, Date.now()); } catch (_) {}
+      // Nếu dữ liệu mới đã sẵn sàng thì dùng luôn; không chớp qua bản lưu cũ.
+      if (cached && (!settled || (settled.error && !/AUTH_REQUIRED/.test(settled.error.message)))) {
+        app.cacheState = 'refreshing';
+        await activateSession(session, cached.data, revision, cached);
+        await finishCacheRefresh(dataRequest, app.request, revision, session);
+      } else {
+        var result = await dataRequest;
+        if (result.error) throw result.error;
+        if (!validCachedData_(result.data)) throw new Error('Dữ liệu tải về không hợp lệ.');
+        await activateSession(session, result.data, revision);
+      }
     } catch (error) {
-      var expired = /AUTH_REQUIRED/.test(error.message);
-      if (expired) storeSession(null);
+      var expired = /AUTH_REQUIRED/.test(error.message), changed = !sessionStillCurrent(saved.token);
+      if (expired && !changed) storeSession(null);
+      app.cacheState = null; updateCacheStatus();
       $('#auth-screen').classList.remove('is-restoring');
       updateAuthMode();
-      $('#auth-error').textContent = expired ? 'Phiên đăng nhập đã hết. Hãy đăng nhập lại.' : 'Chưa thể tải dữ liệu. Hãy kiểm tra mạng và thử lại.';
+      $('#auth-error').textContent = changed ? 'Tài khoản trên thiết bị đã thay đổi. Hãy đăng nhập lại.' : expired ? 'Phiên đăng nhập đã hết. Hãy đăng nhập lại.' : 'Chưa thể tải dữ liệu. Hãy kiểm tra mạng và thử lại.';
       $('#auth-error').hidden = false;
-      if (!expired && $('#auth-retry')) $('#auth-retry').hidden = false;
+      if (!expired && !changed && $('#auth-retry')) $('#auth-retry').hidden = false;
     } finally { setAuthBusy(false); }
+  }
+  async function finishCacheRefresh(request, seq, revision, session) {
+    var result = await request;
+    if (seq !== app.request || !app.session || app.session.uid !== session.uid || app.session.token !== session.token) return;
+    if (!sessionStillCurrent(session.token)) {
+      app.session = null; showAuth('Tài khoản trên thiết bị đã thay đổi. Hãy đăng nhập lại.'); return;
+    }
+    app.loading = false;
+    if (result.error || !validCachedData_(result.data)) {
+      if (result.error && /AUTH_REQUIRED/.test(result.error.message || '')) {
+        storeSession(null); app.session = null; showAuth('Phiên đăng nhập đã hết. Hãy đăng nhập lại.'); return;
+      }
+      app.cacheState = 'error'; updateCacheStatus(); return;
+    }
+    app.cacheState = null;
+    var data = result.data, serverTime = Date.parse(data.serverNow || '');
+    if (isFinite(serverTime)) app.serverClockOffset = serverTime - Date.now();
+    replayMutations_(data, app.history, revision);
+    app.data = data; app.month = data.month;
+    rememberDisplayName(data.displayName); render(true); fitGreetingName();
+    updateCacheStatus(); pruneHistory(); saveCurrentDataCache();
+  }
+  function retryCacheRefresh() {
+    if (app.cacheState !== 'error' || !app.session) return;
+    app.cacheState = 'refreshing'; app.loading = true; updateCacheStatus();
+    var seq = ++app.request, revision = app.revision, session = app.session;
+    var request = rawRpc('getAppData', {token:session.token,month:null}).then(
+      function (data) { return {data:data}; }, function (error) { return {error:error}; }
+    );
+    finishCacheRefresh(request, seq, revision, session);
   }
   function toast(message, isError) {
     var node = $('#toast'); node.textContent = message; node.className = 'toast show' + (isError ? ' error' : '');
@@ -527,11 +635,13 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       app.syncError = error.message || 'Không thể kết nối Google.';
     } finally {
       app.syncSaving = false; updateSyncStatus(); pruneHistory();
+      if (!app.queue.length && !app.syncError) saveCurrentDataCache();
       if (!app.queue.length) toast('Đã lưu các thay đổi lên Google.');
       else if (!app.syncError) processSyncQueue();
     }
   }
   function queueMutation(method, payload) {
+    if (app.cacheState) { toast('Vui lòng chờ cập nhật dữ liệu trước khi chỉnh sửa.', true); return; }
     if (app.loggingOut || !app.session) { showMutationError('Đang đăng xuất. Vui lòng thử lại sau.'); return; }
     if (!app.data || app.data.month !== app.month) { showMutationError('Đang tải dữ liệu tháng. Vui lòng thử lại sau.'); return; }
     var item = {method:method,payload:payload,uid:app.session.uid,createdRevision:++app.revision,settledRevision:0,result:null};
@@ -548,7 +658,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     queueMutation('saveAttendance',{date:app.draft.date,units:units,overtimeHours:hours,note:form.elements.note.value});
   }
   async function load(month) {
-    var seq = ++app.request, revision = app.revision; if (month) app.month = month;
+    var seq = ++app.request, revision = app.revision, loaded = false; if (month) app.month = month;
     app.loading = true;
     $('#content').innerHTML = '<div class="loading-card"><span class="spinner"></span><span>Đang tải dữ liệu của bạn…</span></div>';
     try {
@@ -557,11 +667,11 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       if (isFinite(serverTime)) app.serverClockOffset = serverTime - Date.now();
       // Dữ liệu tải chậm không được ghi đè thay đổi mới hoặc đang chờ lưu.
       replayMutations_(data,app.history,revision);
-      app.data = data; app.month = data.month; rememberDisplayName(data.displayName); render();
+      app.data = data; app.month = data.month; rememberDisplayName(data.displayName); render(); loaded = true;
     } catch (e) {
       if (seq !== app.request) return;
       $('#content').innerHTML = '<section class="card"><h2 class="card-title">Chưa thể tải dữ liệu</h2><p class="empty-text" style="margin:12px 0">' + html(e.message) + '</p><button class="button button-light" data-action="retry">Thử lại</button></section>';
-    } finally { if (seq === app.request) { app.loading = false; pruneHistory(); } }
+    } finally { if (seq === app.request) { app.loading = false; pruneHistory(); if (loaded) saveCurrentDataCache(); } }
   }
   function showMutationError(message) {
     if ($('#dialog').open) {
@@ -591,6 +701,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       Object.keys(draft.values).forEach(function (name) { if (form.elements[name]) form.elements[name].value = draft.values[name]; });
       form.dataset.dirty = 'true';
     });
+    if (app.cacheState) content.querySelectorAll('form input,form select,form textarea').forEach(function (field) { field.disabled = true; });
   }
   function metric(iconName, label, value, detail, title) {
     return '<div class="metric"><div class="metric-icon">'+icon(iconName)+'</div><div><div class="metric-label">'+html(label)+'</div><div class="metric-value" title="'+html(title || value)+'">'+html(value)+'</div><div class="metric-note">'+html(detail)+'</div></div></div>';
@@ -748,10 +859,14 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     if(button.dataset.nav){ app.view=button.dataset.nav; if(app.data && app.data.month===app.month) render(true); window.scrollTo(0,0); return; }
     var action=button.dataset.action; if(!action) return;
     if(action==='logout'){logout();return;}
-    if(action==='retry'){load(app.month);return;}
-    if(action==='retry-sync'){app.syncError=null;updateSyncStatus();processSyncQueue();return;}
+    if(action==='retry-cache'){retryCacheRefresh();return;}
     if(action==='remember-diagnostic'){showRememberDiagnostic();return;}
     if(action==='close-dialog'){closeDialog();return;}
+    if(action==='install-app'){installApp();return;}
+    if(action==='install-help'){installHelp();return;}
+    if(app.cacheState){toast('Vui lòng chờ cập nhật dữ liệu trước khi thao tác.', true);return;}
+    if(action==='retry'){load(app.month);return;}
+    if(action==='retry-sync'){app.syncError=null;updateSyncStatus();processSyncQueue();return;}
     if(!app.data) return;
     if(action==='previous-month'||action==='next-month'||action==='current-month'){
       var month=action==='current-month'?todayForApp().slice(0,7):shiftMonth(app.month,action==='previous-month'?-1:1); load(month);return;
@@ -765,8 +880,6 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       transactionDialog(null,'expense');return;
     }
     if(action==='day'){attendanceDialog(button.dataset.date);return;}
-    if(action==='install-app'){installApp();return;}
-    if(action==='install-help'){installHelp();return;}
     if(action==='units'){
       app.draft.units=Number(button.dataset.units);
       saveAttendanceFromForm($('#dialog form[data-form="attendance"]'),app.draft.units);return;
@@ -805,6 +918,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   });
   document.addEventListener('submit', function(event){
     var form=event.target, kind=form.dataset.form;if(!kind)return;event.preventDefault();
+    if(app.cacheState){toast('Vui lòng chờ cập nhật dữ liệu trước khi chỉnh sửa.', true);return;}
     if(kind==='profile'){
       var displayName=form.elements.displayName.value.trim();
       if (displayName.length > 80 || /[\u0000-\u001f\u007f]/.test(displayName) || /^[=+\-@]/.test(displayName)) {

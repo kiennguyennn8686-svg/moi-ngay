@@ -24,7 +24,7 @@
       } catch (_) {}
     })();
   </script>
-  <link rel="stylesheet" href="./styles.css?v=8d56f5dbfdc2">
+  <link rel="stylesheet" href="./styles.css?v=3b0aedcad11e">
   <style>
     .mobile-clock{margin-left:auto;display:inline-flex;align-items:center;gap:6px;white-space:nowrap;padding:8px 10px;border:1px solid #dfe9db;border-radius:10px;background:#edf4e9;color:#315b38;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;font-size:16px;font-weight:750;font-variant-numeric:tabular-nums;line-height:1}
     .mobile-clock svg{width:17px;height:17px;color:#638b64}
@@ -90,6 +90,7 @@
           <div class="top-actions"><button type="button" class="button button-primary" data-action="quick-attendance"><svg><use href="#i-calendar"/></svg> Chấm công</button><button type="button" class="button button-accent" data-action="quick-expense"><svg><use href="#i-plus"/></svg> Ghi chi tiêu</button></div></div>
         <div class="month-bar"><div class="month-title"><svg><use href="#i-calendar"/></svg><span id="month-label">Đang tải…</span></div><div class="month-controls"><button type="button" class="icon-button" data-action="previous-month" aria-label="Tháng trước"><svg><use href="#i-left"/></svg></button><button type="button" class="today-button" data-action="current-month">Tháng này</button><button type="button" class="icon-button" data-action="next-month" aria-label="Tháng sau"><svg><use href="#i-right"/></svg></button></div></div>
       </header>
+      <div id="cache-status" class="cache-status" role="status" aria-live="polite" hidden></div>
       <main id="content" class="content" aria-live="polite"><div class="loading-card"><span class="spinner"></span><span>Đang tải dữ liệu của bạn…</span></div></main>
       <footer class="footer">Mỗi Ngày <span>·</span> Chăm chút từng ngày</footer>
     </div>
@@ -122,7 +123,7 @@
       window.addEventListener('pageshow', updateClock);
     })();
   </script>
-  <script src="./config.js"></script><script src="./bridge-client.js"></script><script src="./client.js?v=c2c9d4659667"></script>
+  <script src="./config.js"></script><script src="./bridge-client.js"></script><script src="./client.js?v=fd41d577d9a0"></script>
 </body>
 </html>
 
