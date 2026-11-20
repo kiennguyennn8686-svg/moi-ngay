@@ -284,6 +284,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     $('#auth-password').autocomplete = creating ? 'new-password' : 'current-password';
     $('#auth-submit').textContent = creating ? 'Tạo tài khoản' : 'Đăng nhập';
     $('#auth-error').hidden = true; $('#auth-error').textContent = '';
+    if ($('#auth-retry')) $('#auth-retry').hidden = true;
   }
   function setAuthBusy(busy, restoring) {
     app.authBusy = busy; $('#auth-submit').disabled = busy;
@@ -299,7 +300,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     var bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: fromHex(salt), iterations: iterations, hash: 'SHA-256' }, key, 256);
     return new Uint8Array(bits);
   }
-  async function activateSession(session) {
+  async function activateSession(session, initialData, initialRevision) {
     // Không chuyển tài khoản khi còn thay đổi chưa gửi của người dùng trước.
     if (app.queue.length && session.uid !== app.queue[0].uid) {
       rawRpc('logoutAccount', { token: session.token }).catch(function () {});
@@ -310,15 +311,23 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     $('#auth-form').reset(); $('#auth-error').hidden = true;
     $('#auth-password').type = 'password'; $('#auth-show-password').textContent = 'Hiện';
     $('#auth-show-password').setAttribute('aria-label', 'Hiện mật khẩu');
+    if (!app.queue.length || previous !== session.uid) {
+      app.view = 'overview'; app.data = null; app.month = null; app.history = []; app.revision = 0;
+      if (!initialData) $('#content').innerHTML = '<div class="loading-card"><span class="spinner"></span><span>Đang tải dữ liệu của bạn…</span></div>';
+    }
+    if (initialData) {
+      app.request++; app.loading = false;
+      var serverTime = Date.parse(initialData.serverNow || '');
+      if (isFinite(serverTime)) app.serverClockOffset = serverTime - Date.now();
+      replayMutations_(initialData, app.history, initialRevision);
+      app.data = initialData; app.month = initialData.month;
+      rememberDisplayName(initialData.displayName); render(true);
+    }
     $('#auth-screen').hidden = true; $('#private-app').hidden = false; $('#private-nav').hidden = false;
     $('#auth-screen').classList.remove('is-restoring');
     document.documentElement.classList.remove('preparing-session');
-    if (!app.queue.length || previous !== session.uid) {
-      app.view = 'overview'; app.data = null; app.month = null; app.history = []; app.revision = 0;
-      $('#content').innerHTML = '<div class="loading-card"><span class="spinner"></span><span>Đang tải dữ liệu của bạn…</span></div>';
-    }
     app.syncError = null; updateSyncStatus();
-    load(app.month);
+    if (initialData) fitGreetingName(); else load(app.month);
     if (app.queue.length) processSyncQueue();
   }
   async function logout() {
@@ -345,6 +354,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     var field = $('#auth-password'), showing = field.type === 'text'; field.type = showing ? 'password' : 'text';
     this.textContent = showing ? 'Hiện' : 'Ẩn'; this.setAttribute('aria-label', showing ? 'Hiện mật khẩu' : 'Ẩn mật khẩu');
   });
+  if ($('#auth-retry')) $('#auth-retry').addEventListener('click', function () { if (!app.authBusy) startAuth(); });
   $('#auth-form').addEventListener('submit', async function (event) {
     event.preventDefault(); if (app.authBusy) return;
     var form = event.currentTarget, username = form.elements.username.value.trim().toLowerCase(), password = form.elements.password.value;
@@ -371,17 +381,26 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   async function startAuth() {
     var saved = restoreSession();
     if (!saved || !saved.token) { document.documentElement.classList.remove('preparing-session'); return; }
+    $('#auth-error').hidden = true;
+    if ($('#auth-retry')) $('#auth-retry').hidden = true;
     showRememberedGreeting(saved); setAuthBusy(true, true);
     document.documentElement.classList.remove('preparing-session');
     try {
-      var user = await rawRpc('getSession', { token: saved.token });
-      await activateSession({ token: saved.token, uid: user.uid, username: user.username, expires: saved.expires, displayName: saved.displayName });
+      var revision = app.revision;
+      var results = await Promise.all([
+        rawRpc('getSession', { token: saved.token }),
+        rawRpc('getAppData', { token: saved.token, month: null })
+      ]);
+      var user = results[0];
+      await activateSession({ token: saved.token, uid: user.uid, username: user.username, expires: saved.expires, displayName: saved.displayName }, results[1], revision);
     } catch (error) {
-      if (/AUTH_REQUIRED/.test(error.message)) storeSession(null);
+      var expired = /AUTH_REQUIRED/.test(error.message);
+      if (expired) storeSession(null);
       $('#auth-screen').classList.remove('is-restoring');
       updateAuthMode();
-      $('#auth-error').textContent = /AUTH_REQUIRED/.test(error.message) ? 'Phiên đăng nhập đã hết. Hãy đăng nhập lại.' : 'Chưa thể kiểm tra phiên đăng nhập. Hãy kiểm tra mạng và thử lại.';
+      $('#auth-error').textContent = expired ? 'Phiên đăng nhập đã hết. Hãy đăng nhập lại.' : 'Chưa thể tải dữ liệu. Hãy kiểm tra mạng và thử lại.';
       $('#auth-error').hidden = false;
+      if (!expired && $('#auth-retry')) $('#auth-retry').hidden = false;
     } finally { setAuthBusy(false); }
   }
   function toast(message, isError) {
