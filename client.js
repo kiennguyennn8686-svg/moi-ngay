@@ -243,6 +243,21 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     var token = useIosPartitionedSession ? readPartitionedSessionToken_(document) : '';
     return token ? { token: token } : null;
   }
+  function rememberDisplayName(value) {
+    if (!app.session) return;
+    var name = typeof value === 'string' ? value.trim().slice(0, 80) : '';
+    if (app.session.displayName === name) return;
+    app.session.displayName = name; storeSession(app.session);
+  }
+  function showRememberedGreeting(session) {
+    var name = session && typeof session.displayName === 'string' ? session.displayName.trim().slice(0, 80) : '';
+    var title = $('#auth-title'); title.textContent = 'Chào mừng trở lại!';
+    if (!name) return;
+    var line = document.createElement('span');
+    line.setAttribute('data-greeting-name', ''); line.textContent = name; line.title = name;
+    line.style.display = 'block'; line.style.whiteSpace = 'nowrap';
+    title.appendChild(document.createTextNode(' ')); title.appendChild(line); fitGreetingName();
+  }
   function showAuth(message) {
     app.request++; app.loading = false;
     $('#private-app').hidden = true; $('#private-nav').hidden = true; $('#auth-screen').hidden = false;
@@ -266,10 +281,10 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     $('#auth-submit').textContent = creating ? 'Tạo tài khoản' : 'Đăng nhập';
     $('#auth-error').hidden = true; $('#auth-error').textContent = '';
   }
-  function setAuthBusy(busy) {
+  function setAuthBusy(busy, restoring) {
     app.authBusy = busy; $('#auth-submit').disabled = busy;
     document.querySelectorAll('[data-auth-mode]').forEach(function (button) { button.disabled = busy; });
-    $('#auth-submit').textContent = busy ? 'Đang xử lý…' : (app.authMode === 'register' ? 'Tạo tài khoản' : 'Đăng nhập');
+    $('#auth-submit').textContent = busy ? (restoring ? 'Chờ một chút nhé…!' : 'Đang xử lý…') : (app.authMode === 'register' ? 'Tạo tài khoản' : 'Đăng nhập');
   }
   function toHex(bytes) { return Array.from(bytes).map(function (value) { return value.toString(16).padStart(2, '0'); }).join(''); }
   function fromHex(value) { return new Uint8Array(value.match(/../g).map(function (part) { return parseInt(part, 16); })); }
@@ -350,12 +365,13 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
   async function startAuth() {
     var saved = restoreSession();
     if (!saved || !saved.token) return;
-    setAuthBusy(true);
+    showRememberedGreeting(saved); setAuthBusy(true, true);
     try {
       var user = await rawRpc('getSession', { token: saved.token });
-      await activateSession({ token: saved.token, uid: user.uid, username: user.username, expires: saved.expires });
+      await activateSession({ token: saved.token, uid: user.uid, username: user.username, expires: saved.expires, displayName: saved.displayName });
     } catch (error) {
       if (/AUTH_REQUIRED/.test(error.message)) storeSession(null);
+      updateAuthMode();
       $('#auth-error').textContent = /AUTH_REQUIRED/.test(error.message) ? 'Phiên đăng nhập đã hết. Hãy đăng nhập lại.' : 'Chưa thể kiểm tra phiên đăng nhập. Hãy kiểm tra mạng và thử lại.';
       $('#auth-error').hidden = false;
     } finally { setAuthBusy(false); }
@@ -428,14 +444,14 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
     });
   }
   function fitGreetingName() {
-    var name = $('#page-title').querySelector('[data-greeting-name]');
-    if (!name) return;
-    name.style.fontSize = '';
-    var width = name.clientWidth, needed = name.scrollWidth;
-    var size = parseFloat(window.getComputedStyle(name).fontSize);
-    if (width > 0 && needed > width && isFinite(size)) {
-      name.style.fontSize = Math.max(1, size * width / needed * 0.98).toFixed(2) + 'px';
-    }
+    document.querySelectorAll('[data-greeting-name]').forEach(function (name) {
+      name.style.fontSize = '';
+      var width = name.clientWidth, needed = name.scrollWidth;
+      var size = parseFloat(window.getComputedStyle(name).fontSize);
+      if (width > 0 && needed > width && isFinite(size)) {
+        name.style.fontSize = Math.max(1, size * width / needed * 0.98).toFixed(2) + 'px';
+      }
+    });
   }
   function hasPendingAttendance(date) {
     return app.queue.some(function (item) { return (item.method === 'saveAttendance' || item.method === 'deleteAttendance') && item.payload.date === date; });
@@ -478,6 +494,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       // Đối chiếu dữ liệu đã lưu rồi áp dụng lại mọi thay đổi đến sau theo đúng thứ tự.
       projectMutation_(app.data,item);
       app.queue.forEach(function (next) { projectMutation_(app.data,next); });
+      if (item.method === 'saveProfile' && app.data) rememberDisplayName(app.data.displayName);
       if (app.data && app.data.month === app.month) render();
     } catch (error) {
       app.syncError = error.message || 'Không thể kết nối Google.';
@@ -513,7 +530,7 @@ function rememberDiagnostic_(doc, storage, origin, enabled) {
       if (isFinite(serverTime)) app.serverClockOffset = serverTime - Date.now();
       // Dữ liệu tải chậm không được ghi đè thay đổi mới hoặc đang chờ lưu.
       replayMutations_(data,app.history,revision);
-      app.data = data; app.month = data.month; render();
+      app.data = data; app.month = data.month; rememberDisplayName(data.displayName); render();
     } catch (e) {
       if (seq !== app.request) return;
       $('#content').innerHTML = '<section class="card"><h2 class="card-title">Chưa thể tải dữ liệu</h2><p class="empty-text" style="margin:12px 0">' + html(e.message) + '</p><button class="button button-light" data-action="retry">Thử lại</button></section>';
